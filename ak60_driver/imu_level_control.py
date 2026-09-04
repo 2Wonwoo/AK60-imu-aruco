@@ -27,7 +27,7 @@ without a robot attached.
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 # wheel id -> (front_sign, left_sign)
 WHEEL_SIGNS: Dict[int, Tuple[float, float]] = {
@@ -163,4 +163,87 @@ class LevelController:
             raised_wheel=0,
             level=False,
             reason="stop",
+        )
+
+
+@dataclass(frozen=True)
+class SupervisorCommand:
+    """자세 복원이 주도권을 잡았는지, 무엇을 내보낼지."""
+
+    velocities: Dict[int, float]
+    state: str            # FOLLOW / STOP / LEVELING / RELEASE
+    publish: bool         # False 면 아무것도 내보내지 않아 다른 동작에 양보한다
+    reason: str
+
+    def leveling(self) -> bool:
+        return self.state in ("STOP", "LEVELING")
+
+
+@dataclass
+class LevelSupervisor:
+    """자세 복원과 마커 추종 사이의 주도권을 관리한다.
+
+    평소에는 아무것도 내보내지 않아 마커 추종이 로봇을 몰게 두고, 바디가
+    기울면 즉시 전체를 정지시킨 뒤 자세가 돌아올 때까지 바퀴를 후진시킨다.
+    수평이 ``level_hold_sec`` 동안 유지되면 주도권을 돌려준다 (임계값 근처에서
+    두 동작이 번갈아 튀는 것을 막는다).
+    """
+
+    controller: LevelController
+    level_hold_sec: float = 0.3
+
+    _leveling: bool = field(default=False, init=False)
+    _level_since: Optional[float] = field(default=None, init=False)
+
+    def _stopped(self) -> Dict[int, float]:
+        return {wheel: 0.0 for wheel in WHEEL_SIGNS}
+
+    def update(self, roll: float, pitch: float, now: float) -> SupervisorCommand:
+        command = self.controller.update(roll, pitch)
+
+        if not self._leveling:
+            if command.level:
+                return SupervisorCommand(
+                    velocities=self._stopped(),
+                    state="FOLLOW",
+                    publish=False,
+                    reason=command.reason,
+                )
+            # 기울어졌다. 먼저 전부 세우고 다음 주기부터 복원에 들어간다.
+            self._leveling = True
+            self._level_since = None
+            return SupervisorCommand(
+                velocities=self._stopped(),
+                state="STOP",
+                publish=True,
+                reason=f"tilt detected - stopping ({command.reason})",
+            )
+
+        if not command.level:
+            self._level_since = None
+            return SupervisorCommand(
+                velocities=command.velocities,
+                state="LEVELING",
+                publish=True,
+                reason=command.reason,
+            )
+
+        # 수평으로 돌아왔다. 잠시 유지되는지 확인한 뒤 주도권을 넘긴다.
+        if self._level_since is None:
+            self._level_since = now
+        if now - self._level_since < self.level_hold_sec:
+            return SupervisorCommand(
+                velocities=self._stopped(),
+                state="LEVELING",
+                publish=True,
+                reason=f"levelled, holding ({now - self._level_since:.1f}s)",
+            )
+
+        self._leveling = False
+        self._level_since = None
+        return SupervisorCommand(
+            velocities=self._stopped(),
+            state="RELEASE",
+            publish=True,
+            reason="levelled - handing control back",
         )

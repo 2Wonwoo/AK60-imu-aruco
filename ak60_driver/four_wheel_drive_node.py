@@ -49,6 +49,9 @@ class FourWheelDriveNode(Node):
         self.declare_parameter("kd", 1.0)
         self.declare_parameter("control_rate", 50.0)
         self.declare_parameter("command_timeout", 0.5)
+        # /wheel_velocities 가 이 시간 안에 들어오면 /cmd_vel 보다 우선한다.
+        # 자세 복원이 마커 추종보다 앞서야 하기 때문이다.
+        self.declare_parameter("wheel_priority_timeout", 0.3)
 
         interface = self.get_parameter("can_interface").value
         self.wheel_radius = float(self.get_parameter("wheel_radius").value)
@@ -59,6 +62,9 @@ class FourWheelDriveNode(Node):
         self.kd = float(self.get_parameter("kd").value)
         control_rate = float(self.get_parameter("control_rate").value)
         self.command_timeout = float(self.get_parameter("command_timeout").value)
+        self.wheel_priority_timeout = float(
+            self.get_parameter("wheel_priority_timeout").value
+        )
 
         if self.wheel_radius <= 0.0:
             raise ValueError("wheel_radius must be positive")
@@ -69,8 +75,12 @@ class FourWheelDriveNode(Node):
 
         self.protocol = Ak60V3Protocol()
         self.bus = SocketCanSender(str(interface))
-        self.targets: Dict[int, float] = {motor_id: 0.0 for motor_id in range(1, 5)}
+        stopped = {motor_id: 0.0 for motor_id in range(1, 5)}
+        self.targets: Dict[int, float] = dict(stopped)
+        self.wheel_targets: Dict[int, float] = dict(stopped)
         self.last_command_time = self.get_clock().now()
+        self.last_wheel_time = self.get_clock().now()
+        self.wheel_priority = False
         self.timed_out = True
         self.closed = False
 
@@ -133,7 +143,7 @@ class FourWheelDriveNode(Node):
             )
             return
 
-        self.targets = {
+        self.wheel_targets = {
             motor_id: self.MOTOR_DIRECTION[motor_id]
             * clamp(
                 float(message.data[motor_id - 1]),
@@ -142,7 +152,7 @@ class FourWheelDriveNode(Node):
             )
             for motor_id in (1, 2, 3, 4)
         }
-        self.last_command_time = self.get_clock().now()
+        self.last_wheel_time = self.get_clock().now()
         self.timed_out = False
 
     def send_targets(self, targets: Dict[int, float]) -> None:
@@ -158,8 +168,25 @@ class FourWheelDriveNode(Node):
                 time.sleep(0.02)
 
     def control_loop(self) -> None:
-        age = (self.get_clock().now() - self.last_command_time).nanoseconds / 1e9
-        targets = self.targets
+        now = self.get_clock().now()
+        wheel_age = (now - self.last_wheel_time).nanoseconds / 1e9
+        cmd_age = (now - self.last_command_time).nanoseconds / 1e9
+
+        # 자세 복원(/wheel_velocities)이 마커 추종(/cmd_vel)보다 우선한다.
+        # 복원이 끝나 발행이 멈추면 우선권이 자연히 풀린다.
+        if wheel_age <= self.wheel_priority_timeout:
+            targets = self.wheel_targets
+            age = wheel_age
+            if not self.wheel_priority:
+                self.get_logger().info("/wheel_velocities has priority over /cmd_vel")
+                self.wheel_priority = True
+        else:
+            targets = self.targets
+            age = cmd_age
+            if self.wheel_priority:
+                self.get_logger().info("/wheel_velocities released: /cmd_vel resumes")
+                self.wheel_priority = False
+
         if age > self.command_timeout:
             targets = {motor_id: 0.0 for motor_id in range(1, 5)}
             if not self.timed_out:

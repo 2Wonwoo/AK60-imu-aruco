@@ -18,7 +18,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 
-from .imu_level_control import LevelController, WHEEL_NAMES
+from .imu_level_control import LevelController, LevelSupervisor, WHEEL_NAMES
 
 try:
     import serial
@@ -54,8 +54,15 @@ class ImuLeveler(Node):
         self.declare_parameter("tare_samples", 50)
 
         self.declare_parameter("dry_run", True)       # 기본은 모터를 움직이지 않는다
+        # 수평이 이 시간만큼 유지되어야 마커 추종에 주도권을 돌려준다.
+        # 임계값 근처에서 두 동작이 번갈아 튀는 것을 막는다.
+        self.declare_parameter("level_hold_sec", 0.3)
+        # True 면 수평일 때 명령을 내보내지 않아 다른 노드(마커 추종)가 로봇을
+        # 몬다. False 면 예전처럼 매 주기 명령을 내보낸다 (단독 사용).
+        self.declare_parameter("yield_when_level", True)
 
         self.dry_run = bool(self.parameter("dry_run"))
+        self.yield_when_level = bool(self.parameter("yield_when_level"))
         self.controller = LevelController(
             level_threshold=float(self.parameter("level_threshold")),
             gain=float(self.parameter("gain")),
@@ -68,6 +75,10 @@ class ImuLeveler(Node):
             pitch_offset=float(self.parameter("pitch_offset")),
             mount_yaw_deg=float(self.parameter("mount_yaw_deg")),
             max_tilt=float(self.parameter("max_tilt")),
+        )
+        self.supervisor = LevelSupervisor(
+            controller=self.controller,
+            level_hold_sec=float(self.parameter("level_hold_sec")),
         )
 
         self.publisher = self.create_publisher(Float64MultiArray, "/wheel_velocities", 10)
@@ -166,22 +177,38 @@ class ImuLeveler(Node):
             return
 
         roll, pitch = attitude
-        command = self.controller.update(roll, pitch)
 
-        if command.reason != self.last_reason:
-            self.get_logger().info(command.reason)
-            self.last_reason = command.reason
-
-        if self.dry_run:
-            if command.active():
-                detail = "  ".join(
-                    f"{WHEEL_NAMES[w]}({w}) {command.velocities[w]:+.2f}"
-                    for w in (1, 2, 3, 4)
-                )
-                self.get_logger().info(f"[dry_run] {detail}", throttle_duration_sec=0.5)
+        if not self.yield_when_level:
+            # 단독 사용: 매 주기 명령을 내보낸다 (수평이면 정지 명령).
+            command = self.controller.update(roll, pitch)
+            self.report(command.reason, command.velocities, command.active())
+            if not self.dry_run:
+                self.publish(command.velocities)
             return
 
-        self.publish(command.velocities)
+        now = self.get_clock().now().nanoseconds / 1e9
+        decision = self.supervisor.update(roll, pitch, now)
+
+        self.report(
+            f"[{decision.state}] {decision.reason}",
+            decision.velocities,
+            decision.leveling(),
+        )
+        if self.dry_run:
+            return
+        # 수평일 때는 아무것도 내보내지 않아 마커 추종이 로봇을 몰게 둔다.
+        if decision.publish:
+            self.publish(decision.velocities)
+
+    def report(self, reason, velocities, active) -> None:
+        if reason != self.last_reason:
+            self.get_logger().info(reason)
+            self.last_reason = reason
+        if self.dry_run and active and any(velocities.values()):
+            detail = "  ".join(
+                f"{WHEEL_NAMES[w]}({w}) {velocities[w]:+.2f}" for w in (1, 2, 3, 4)
+            )
+            self.get_logger().info(f"[dry_run] {detail}", throttle_duration_sec=0.5)
 
     def destroy_node(self) -> bool:
         try:

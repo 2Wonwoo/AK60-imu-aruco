@@ -187,6 +187,8 @@ ros2 launch ak60_driver imu_level.launch.py dry_run:=false pitch_sign:=-1.0
 | `roll_offset` / `pitch_offset` | −2.31 / 1.83 | 수평 기준값 (이 로봇 실측) |
 | `tare_on_start` | `false` | 시작할 때 현재 자세를 수평으로 잡기 |
 | `publish_rate` | 20.0 | 제어 주기 (Hz) |
+| `yield_when_level` | `true` | 수평이면 발행하지 않아 마커 추종에 양보 |
+| `level_hold_sec` | 0.3 | 수평이 이만큼 유지되어야 주도권 반환 |
 
 ### 안전장치
 
@@ -196,6 +198,53 @@ ros2 launch ak60_driver imu_level.launch.py dry_run:=false pitch_sign:=-1.0
 - `four_wheel_drive_node` 의 `command_timeout` (0.5초) — 노드가 죽거나 IMU 가
   끊기면 모터가 자동 정지한다
 - 노드 종료 시 정지 명령 발행
+
+---
+
+## 마커 추종 + 자세 복원 통합 (`aruco_imu.launch.py`)
+
+평소에는 마커를 추종하다가, 바퀴가 장애물에 올라가 바디가 기울면 **추종을 멈추고
+자세를 복원한 뒤 다시 추종**한다.
+
+```bash
+./can_check.sh can1 1000000
+
+# 판정만 확인 (모터 안 움직임)
+ros2 launch ak60_driver aruco_imu.launch.py
+
+# 실제 구동
+ros2 launch ak60_driver aruco_imu.launch.py dry_run:=false
+```
+
+### 주도권 중재
+
+```
+aruco_follower  --/cmd_vel----------+
+                                    +--> four_wheel_drive_node --> CAN
+imu_leveler  --/wheel_velocities----+
+```
+
+두 노드가 동시에 명령을 내면 서로 싸우므로 `four_wheel_drive_node` 가 중재한다.
+`/wheel_velocities` 가 `wheel_priority_timeout`(0.3초) 안에 들어오면 `/cmd_vel` 을
+무시한다. `imu_leveler` 는 **수평일 때 아무것도 발행하지 않으므로** 우선권이
+자연히 풀리고 마커 추종이 로봇을 몬다.
+
+`aruco_follower` 는 계속 `/cmd_vel` 을 발행해도 되며 수정할 필요가 없다.
+
+### 상태 전이
+
+| 상태 | 동작 |
+|---|---|
+| `FOLLOW` | 발행 없음. 마커 추종이 로봇을 몬다 |
+| `STOP` | 기울기 감지 → **전체 정지** (한 주기) |
+| `LEVELING` | 들린 바퀴를 후진. 수평이 될 때까지 |
+| `RELEASE` | 수평이 `level_hold_sec` 유지됨 → 정지 명령 한 번 내고 주도권 반환 |
+
+`level_hold_sec`(기본 0.3초)는 임계값 근처에서 추종과 복원이 번갈아 튀는 것을
+막는다. 유지 중에 다시 기울면 타이머가 초기화되고 복원을 계속한다.
+
+> `imu_leveler` 를 단독으로 쓸 때는 `yield_when_level:=false` 로 두면 수평일 때도
+> 매 주기 정지 명령을 내보낸다.
 
 ---
 

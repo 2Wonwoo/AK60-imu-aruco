@@ -3,6 +3,77 @@
 Jetson Orin Nano + AK60-6 4륜 로봇용 ROS 2 패키지.
 SocketCAN 모터 구동, ArUco 마커 추종, IMU 기반 자세 복원을 포함한다.
 
+## Quick Start
+
+**1. 준비** — 매번 터미널을 열 때마다
+
+```bash
+~/can_check.sh can1 1000000          # CAN 버스 기동 (이게 없으면 모터 노드가 죽는다)
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+```
+
+`ip -br link show type can` 으로 `can1` 이 `UP` 인지 확인할 수 있다.
+
+**2. 실행** — 마커를 추종하다가 바디가 기울면 자세를 복원하고 다시 추종
+
+```bash
+# 판정만 확인 (모터가 움직이지 않는다 - 먼저 이걸로 확인할 것)
+ros2 launch ak60_driver aruco_imu.launch.py
+
+# 실제 구동
+ros2 launch ak60_driver aruco_imu.launch.py dry_run:=false
+```
+
+`Ctrl+C` 로 종료하면 모터에 정지 명령이 나간다.
+
+### 개별 실행
+
+```bash
+ros2 launch ak60_driver aruco_imu.launch.py dry_run:=false     # 추종 + 자세 복원
+ros2 launch ak60_driver aruco_follow.launch.py dry_run:=false  # 마커 추종만
+ros2 launch ak60_driver imu_level.launch.py dry_run:=false     # 자세 복원만
+ros2 run ak60_driver keyboard_teleop                           # 키보드 수동 조작
+```
+
+### 자주 쓰는 인자
+
+```bash
+# 추종할 마커 번호와 실제 인쇄 크기(m)
+ros2 launch ak60_driver aruco_imu.launch.py dry_run:=false \
+    target_marker_id:=1 marker_size:=0.15
+
+# 정지 거리 / 자세 복원 데드존
+ros2 launch ak60_driver aruco_imu.launch.py dry_run:=false \
+    stop_distance:=0.60 level_threshold:=5.0
+
+# 카메라 화면 보기
+ros2 launch ak60_driver aruco_imu.launch.py dry_run:=false headless:=false
+```
+
+### 빌드와 테스트
+
+```bash
+cd ~/ros2_ws
+colcon build --packages-select ak60_driver && source install/setup.bash
+
+python3 -m pytest src/ak60_driver/test/ -q \
+    --ignore=src/ak60_driver/test/test_flake8.py \
+    --ignore=src/ak60_driver/test/test_pep257.py \
+    --ignore=src/ak60_driver/test/test_copyright.py
+```
+
+### 문제가 생기면
+
+| 증상 | 원인 |
+|---|---|
+| `Network is down` 으로 노드가 죽음 | CAN 미기동 → `~/can_check.sh can1 1000000` |
+| 모터가 전혀 안 움직임 | `dry_run` 이 `true` (기본값) → `dry_run:=false` |
+| 명령을 보내도 모터 무반응 | `ip -d link show can1` 이 `ERROR-PASSIVE` 면 모터 전원·배선·종단저항 확인 |
+| 엉뚱한 바퀴가 후진 | IMU 장착 방향 → [`mount_yaw_deg`](#imu-장착-방향-mount_yaw_deg) |
+
+---
+
 ## 바퀴 배치
 
 ```
@@ -36,7 +107,8 @@ SocketCAN 모터 구동, ArUco 마커 추종, IMU 기반 자세 복원을 포함
 **바퀴를 개별로 돌리려면** `/wheel_velocities` (Float64MultiArray, `data[0..3]`
 = ID 1..4, 전진 양수 rad/s) 를 쓴다.
 
-> 두 토픽을 동시에 발행하는 노드를 함께 띄우지 말 것. 나중에 도착한 명령이 이긴다.
+> 두 토픽이 동시에 들어오면 `/wheel_velocities` 가 이긴다 (자세 복원 우선).
+> 자세한 중재 방식은 [주도권 중재](#주도권-중재) 참조.
 
 ---
 
@@ -157,7 +229,7 @@ tare 완료 (50 샘플): roll_offset=-2.31, pitch_offset=+1.83
 
 ```bash
 # 1) CAN 올리기
-./can_check.sh can1 1000000
+~/can_check.sh can1 1000000
 
 # 2) 판정만 확인 (모터 안 움직임)
 ros2 launch ak60_driver imu_level.launch.py
@@ -207,7 +279,7 @@ ros2 launch ak60_driver imu_level.launch.py dry_run:=false pitch_sign:=-1.0
 자세를 복원한 뒤 다시 추종**한다.
 
 ```bash
-./can_check.sh can1 1000000
+~/can_check.sh can1 1000000
 
 # 판정만 확인 (모터 안 움직임)
 ros2 launch ak60_driver aruco_imu.launch.py
@@ -260,21 +332,14 @@ https://github.com/2Wonwoo/aruco_tracking
 
 ---
 
-## 빌드와 테스트
+## 개발 메모
 
-```bash
-cd ~/ros2_ws
-colcon build --packages-select ak60_driver
-source install/setup.bash
-```
+제어 로직은 ROS·하드웨어 없이 테스트할 수 있도록 순수 모듈로 분리해 두었다.
+카메라나 CAN 버스 없이도 정책을 검증할 수 있다.
 
-제어 로직은 ROS·하드웨어 없이 테스트할 수 있도록 순수 모듈로 분리해 두었다
-(`aruco_follow_control.py`, `imu_level_control.py`):
+| 순수 모듈 | 대응 노드 |
+|---|---|
+| `aruco_follow_control.py` | `aruco_follower.py` |
+| `imu_level_control.py` | `imu_leveler.py` |
 
-```bash
-source /opt/ros/humble/setup.bash && source install/setup.bash
-python3 -m pytest src/ak60_driver/test/ -q \
-    --ignore=src/ak60_driver/test/test_flake8.py \
-    --ignore=src/ak60_driver/test/test_pep257.py \
-    --ignore=src/ak60_driver/test/test_copyright.py
-```
+빌드와 테스트 명령은 [Quick Start](#빌드와-테스트) 참조.

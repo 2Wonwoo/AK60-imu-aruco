@@ -101,7 +101,7 @@ class FourWheelDriveNode(Node):
             # 남기면 원인을 알기 어려우므로 조치 방법까지 알려준다.
             raise RuntimeError(
                 f"CAN 인터페이스 '{interface}' 로 보낼 수 없습니다 ({error}). "
-                f"먼저 인터페이스를 올리세요:  ./can_check.sh {interface} 1000000"
+                f"먼저 인터페이스를 올리세요:  ~/can_check.sh {interface} 1000000"
             ) from error
 
         self.get_logger().info(

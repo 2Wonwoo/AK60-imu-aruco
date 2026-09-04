@@ -1,0 +1,231 @@
+# ak60_driver
+
+Jetson Orin Nano + AK60-6 4륜 로봇용 ROS 2 패키지.
+SocketCAN 모터 구동, ArUco 마커 추종, IMU 기반 자세 복원을 포함한다.
+
+## 바퀴 배치
+
+```
+        앞
+   ID2 ●────● ID1
+       │    │
+   ID4 ●────● ID3
+        뒤
+```
+
+| ID | 위치 | 모터 방향 부호 |
+|---|---|---|
+| 1 | 앞-오른쪽 | +1 |
+| 2 | 앞-왼쪽 | −1 |
+| 3 | 뒤-오른쪽 | +1 |
+| 4 | 뒤-왼쪽 | −1 |
+
+왼쪽 모터는 물리적으로 반대를 향하므로 부호가 뒤집힌다. 이 보정은
+`four_wheel_drive_node` 가 하므로, 토픽으로 보내는 값은 **항상 전진이 양수**다.
+
+## 노드
+
+| 실행 이름 | 역할 | 입력 | 출력 |
+|---|---|---|---|
+| `four_wheel_drive_node` | CAN 모터 구동 | `/cmd_vel`, `/wheel_velocities` | CAN |
+| `aruco_follower` | 마커 추종 | CSI 카메라 | `/cmd_vel` |
+| `imu_leveler` | 자세 복원 | IMU (USB 시리얼) | `/wheel_velocities` |
+| `keyboard_teleop` | 수동 조작 | 키보드 | `/cmd_vel` |
+
+`/cmd_vel` (Twist) 은 차동구동이라 좌/우 쌍으로만 움직인다.
+**바퀴를 개별로 돌리려면** `/wheel_velocities` (Float64MultiArray, `data[0..3]`
+= ID 1..4, 전진 양수 rad/s) 를 쓴다.
+
+> 두 토픽을 동시에 발행하는 노드를 함께 띄우지 말 것. 나중에 도착한 명령이 이긴다.
+
+---
+
+## IMU 자세 복원 (`imu_leveler`)
+
+바퀴 하나가 장애물 위에 올라가 바디가 기울면, **들린 바퀴를 후진시켜** 장애물에서
+내려오게 해 바디를 다시 지면과 평행하게 만든다.
+
+### 원리
+
+roll 과 pitch 를 조합하면 어느 **모서리**가 들렸는지 알 수 있다. 앞바퀴는 pitch 에
+`+`, 뒷바퀴는 `−`, 왼쪽은 roll 에 `+`, 오른쪽은 `−` 로 기여한다:
+
+```
+elevation(i) = pitch_up × front_sign(i) + roll_up × left_sign(i)
+```
+
+| ID | front_sign | left_sign |
+|---|---|---|
+| 1 앞-오른쪽 | +1 | −1 |
+| 2 앞-왼쪽 | +1 | +1 |
+| 3 뒤-오른쪽 | −1 | −1 |
+| 4 뒤-왼쪽 | −1 | +1 |
+
+ID2(앞-왼쪽)가 장애물에 올라가면 앞이 들리고(pitch+) 왼쪽이 들려서(roll+)
+두 항이 모두 양수가 되므로, ID2 의 `elevation` 만 크게 나온다.
+
+각 바퀴 속도는 들린 정도에 비례한다 (들린 바퀴는 후진):
+
+```
+velocity(i) = −gain × max(elevation(i), 0)
+```
+
+기울기가 `level_threshold` 아래로 내려오면 수평으로 보고 전부 정지한다.
+
+### IMU 장착 방향 (`mount_yaw_deg`)
+
+**이 로봇의 IMU 는 바디에 수직축으로 90도 돌아간 채 장착되어 있다.** 그래서 센서의
+roll 축이 바디의 pitch 축이 된다. `mount_yaw_deg` 기본값 `90.0` 이 이를 보정한다.
+
+네 모서리를 하나씩 손으로 들어올려 확인한 실측값:
+
+| 실제로 든 바퀴 | 보정 전 판정 | 측정값 (roll, pitch) |
+|---|---|---|
+| ID2 앞-왼쪽 | front-right ✗ | (−5.8, +6.7) |
+| ID1 앞-오른쪽 | rear-right ✗ | (−4.7, −7.7) |
+| ID4 뒤-왼쪽 | front-left ✗ | (+5.5, +7.2) |
+| ID3 뒤-오른쪽 | rear-left ✗ | (+2.1, −7.9) |
+
+단순 부호 뒤집기가 아니라 **90도 회전**이라 `roll_sign` / `pitch_sign` 으로는
+고칠 수 없다. 기울기를 2차원 벡터로 보고 장착 회전각만큼 되돌린다:
+
+```
+roll_body  =  roll·cos ψ + pitch·sin ψ
+pitch_body = −roll·sin ψ + pitch·cos ψ
+```
+
+ψ=90° 이면 `roll_body = pitch`, `pitch_body = −roll` 이 되어 네 모서리가 모두
+올바르게 판정된다. 이 실측값은 회귀 테스트로 고정해 두었다
+(`test_mount_yaw_matches_the_measured_corners`).
+
+### ⚠️ IMU 를 다시 장착했다면 반드시 재확인
+
+장착 방향이 바뀌면 판정이 어긋나고, 그러면 로봇이 장애물에서 내려오는 게 아니라
+**더 올라가려 한다.** `dry_run` 이 기본값 `true` 라 명령을 발행하지 않고 판정만
+출력하므로, 모터를 붙이기 전에 반드시 확인할 것:
+
+```bash
+ros2 run ak60_driver imu_leveler
+```
+
+**네 모서리를 하나씩 들어올리며** 로그가 실제 모서리와 맞는지 본다:
+
+```
+[INFO] front-left raised +8.3 deg (roll +5.9, pitch +5.8)
+```
+
+어긋난다면 `mount_yaw_deg` 를 0 / 90 / 180 / 270 중에서 바꿔가며 맞춘다:
+
+```bash
+ros2 run ak60_driver imu_leveler --ros-args -p mount_yaw_deg:=270.0
+```
+
+거울처럼 좌우만 뒤집혔다면 (회전으로 설명되지 않는 경우) `roll_sign` 또는
+`pitch_sign` 을 `-1.0` 으로 준다.
+
+### 수평 기준과 데드존
+
+IMU 는 중력 기준 절대각을 출력하므로, 장착이 조금이라도 기울면 평지에서도 각도가
+0 으로 읽히지 않는다. 이 로봇에서 평지에 두고 500 샘플을 측정한 값:
+
+```
+roll  평균 -2.31도   (표준편차 0.005 - 드리프트가 아니라 장착 기울기)
+pitch 평균 +1.83도
+```
+
+이 값이 `roll_offset` / `pitch_offset` 기본값으로 들어가 있어, **현재 자세가
+`tilt 0.0 deg` 로 읽힌다.** 그리고 `level_threshold` 가 5.0 이므로 **기준에서
+±5도 안쪽의 변화에는 반응하지 않는다.**
+
+로봇에서 IMU 를 떼어 다시 달았거나 다른 기체에 옮겼다면 기준을 다시 잡아야 한다.
+**네 바퀴가 모두 평평한 바닥에 닿은 상태에서** 실행할 것:
+
+```bash
+ros2 run ak60_driver imu_leveler --ros-args -p tare_on_start:=true
+```
+
+로그에 새 값이 나온다:
+
+```
+tare 완료 (50 샘플): roll_offset=-2.31, pitch_offset=+1.83
+```
+
+> ⚠️ **바퀴가 장애물에 올라간 상태에서 tare 하지 말 것.** 그 기울어진 자세를
+> 수평으로 학습해 버려서, 평지에 내려왔을 때 로봇이 다시 올라가려 한다.
+
+### 실행
+
+```bash
+# 1) CAN 올리기
+./can_check.sh can1 1000000
+
+# 2) 판정만 확인 (모터 안 움직임)
+ros2 launch ak60_driver imu_level.launch.py
+
+# 3) 부호를 확인한 뒤 실제 구동
+ros2 launch ak60_driver imu_level.launch.py dry_run:=false
+
+# 부호가 반대였다면
+ros2 launch ak60_driver imu_level.launch.py dry_run:=false pitch_sign:=-1.0
+```
+
+### 파라미터
+
+| 이름 | 기본값 | 설명 |
+|---|---|---|
+| `dry_run` | `true` | 명령을 발행하지 않고 판정만 출력 |
+| `port` | 자동 탐색 | IMU 시리얼 포트 (비우면 `/dev/ttyUSB*` 자동) |
+| `baud` | 115200 | IMU 통신속도 |
+| `level_threshold` | 5.0 | 기준에서 이 각도(도) 안쪽이면 수평으로 보고 정지 (데드존) |
+| `gain` | 0.08 | 들린 각도 1도당 rad/s |
+| `max_velocity` | 0.6 | 바퀴 속도 상한 (rad/s) |
+| `min_velocity` | 0.05 | 이보다 작은 명령은 무시 (모터 떨림 방지) |
+| `reverse_only` | `true` | 들린 바퀴만 후진. `false` 면 내려간 바퀴는 전진 |
+| `max_tilt` | 35.0 | 이보다 크게 기울면 비정상으로 보고 정지 |
+| `roll_sign` / `pitch_sign` | 1.0 | 부호 규약 보정 (거울 반전인 경우) |
+| `mount_yaw_deg` | 90.0 | IMU 장착 회전각 (이 로봇 실측) |
+| `roll_offset` / `pitch_offset` | −2.31 / 1.83 | 수평 기준값 (이 로봇 실측) |
+| `tare_on_start` | `false` | 시작할 때 현재 자세를 수평으로 잡기 |
+| `publish_rate` | 20.0 | 제어 주기 (Hz) |
+
+### 안전장치
+
+- `dry_run` 기본 `true` — 부호를 확인하기 전에는 움직이지 않는다
+- `max_velocity` 기본 0.6 rad/s 로 낮게 제한
+- `max_tilt` 초과 시 정지 (센서 이상이나 전복 상황에서 폭주 방지)
+- `four_wheel_drive_node` 의 `command_timeout` (0.5초) — 노드가 죽거나 IMU 가
+  끊기면 모터가 자동 정지한다
+- 노드 종료 시 정지 명령 발행
+
+---
+
+## ArUco 마커 추종 (`aruco_follower`)
+
+```bash
+ros2 launch ak60_driver aruco_follow.launch.py                    # dry_run 기본 false
+ros2 launch ak60_driver aruco_follow.launch.py dry_run:=true headless:=false
+```
+
+마커 생성·인쇄와 카메라 설정은 별도 저장소 참조:
+https://github.com/2Wonwoo/aruco_tracking
+
+---
+
+## 빌드와 테스트
+
+```bash
+cd ~/ros2_ws
+colcon build --packages-select ak60_driver
+source install/setup.bash
+```
+
+제어 로직은 ROS·하드웨어 없이 테스트할 수 있도록 순수 모듈로 분리해 두었다
+(`aruco_follow_control.py`, `imu_level_control.py`):
+
+```bash
+source /opt/ros/humble/setup.bash && source install/setup.bash
+python3 -m pytest src/ak60_driver/test/ -q \
+    --ignore=src/ak60_driver/test/test_flake8.py \
+    --ignore=src/ak60_driver/test/test_pep257.py \
+    --ignore=src/ak60_driver/test/test_copyright.py
+```

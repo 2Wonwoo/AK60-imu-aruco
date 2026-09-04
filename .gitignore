@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 편집 중 남은 백업본
+*.bak
+*.bak.*
+
+# colcon 빌드 산출물 (워크스페이스 루트에 생성됨)
+build/
+install/
+log/

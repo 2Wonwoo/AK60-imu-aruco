@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""Level the robot body using an EBIMU-9DOFV6 attached over USB serial.
+
+When a wheel climbs an obstacle the body tilts.  This node reads roll/pitch from
+the IMU, works out which corner is raised, and drives that wheel backwards until
+the body is parallel to the ground again.
+
+The wheel commands go out on ``/wheel_velocities`` (Float64MultiArray, motor IDs
+1..4, forward-positive rad/s) which ``four_wheel_drive_node`` turns into CAN
+frames.  ``dry_run`` is on by default so the logic can be checked by hand-tilting
+the robot before anything moves.
+"""
+
+import glob
+from typing import Optional
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Float64MultiArray
+
+from .imu_level_control import LevelController, WHEEL_NAMES
+
+try:
+    import serial
+except ImportError:  # pragma: no cover - 런타임 환경에서만 의미가 있다
+    serial = None
+
+
+class ImuLeveler(Node):
+    def __init__(self) -> None:
+        super().__init__("imu_leveler")
+
+        self.declare_parameter("port", "")            # 비우면 자동 탐색
+        self.declare_parameter("baud", 115200)
+        self.declare_parameter("publish_rate", 20.0)
+
+        self.declare_parameter("level_threshold", 5.0)
+        self.declare_parameter("gain", 0.08)
+        self.declare_parameter("max_velocity", 0.6)
+        self.declare_parameter("min_velocity", 0.05)
+        self.declare_parameter("reverse_only", True)
+        self.declare_parameter("max_tilt", 35.0)
+
+        self.declare_parameter("roll_sign", 1.0)
+        self.declare_parameter("pitch_sign", 1.0)
+        # 이 로봇에 IMU 를 장착한 상태에서 평지에 두고 측정한 값(500 샘플 평균).
+        # 다른 곳에 옮겨 달았다면 tare_on_start:=true 로 다시 잡을 것.
+        self.declare_parameter("roll_offset", -2.31)
+        self.declare_parameter("pitch_offset", 1.83)
+        # 이 로봇은 IMU 가 바디에 수직축으로 90도 돌아간 채 장착되어 있다.
+        # 네 모서리를 하나씩 들어올려 확인한 값 (test_imu_level_control.py 참조).
+        self.declare_parameter("mount_yaw_deg", 90.0)
+        self.declare_parameter("tare_on_start", False)
+        self.declare_parameter("tare_samples", 50)
+
+        self.declare_parameter("dry_run", True)       # 기본은 모터를 움직이지 않는다
+
+        self.dry_run = bool(self.parameter("dry_run"))
+        self.controller = LevelController(
+            level_threshold=float(self.parameter("level_threshold")),
+            gain=float(self.parameter("gain")),
+            max_velocity=float(self.parameter("max_velocity")),
+            min_velocity=float(self.parameter("min_velocity")),
+            reverse_only=bool(self.parameter("reverse_only")),
+            roll_sign=float(self.parameter("roll_sign")),
+            pitch_sign=float(self.parameter("pitch_sign")),
+            roll_offset=float(self.parameter("roll_offset")),
+            pitch_offset=float(self.parameter("pitch_offset")),
+            mount_yaw_deg=float(self.parameter("mount_yaw_deg")),
+            max_tilt=float(self.parameter("max_tilt")),
+        )
+
+        self.publisher = self.create_publisher(Float64MultiArray, "/wheel_velocities", 10)
+        self.serial = self.open_imu()
+
+        if bool(self.parameter("tare_on_start")):
+            self.tare(int(self.parameter("tare_samples")))
+
+        rate = float(self.parameter("publish_rate"))
+        self.timer = self.create_timer(1.0 / rate, self.control_loop)
+        self.last_reason = ""
+
+        self.get_logger().info(
+            f"IMU leveler ready: dry_run={self.dry_run}, "
+            f"threshold={self.controller.level_threshold:.1f} deg, "
+            f"gain={self.controller.gain:.3f}, max={self.controller.max_velocity:.2f} rad/s"
+        )
+        if self.dry_run:
+            self.get_logger().warn(
+                "dry_run=True 이므로 명령을 발행하지 않는다. "
+                "로봇을 손으로 기울여 판정이 맞는지 먼저 확인할 것"
+            )
+
+    def parameter(self, name: str):
+        return self.get_parameter(name).value
+
+    def open_imu(self):
+        if serial is None:
+            raise RuntimeError("pyserial 이 없습니다:  pip3 install --user pyserial")
+
+        port = str(self.parameter("port")).strip()
+        if not port:
+            candidates = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
+            if not candidates:
+                raise RuntimeError(
+                    "IMU 시리얼 포트를 찾을 수 없습니다 (/dev/ttyUSB*, /dev/ttyACM*)"
+                )
+            port = candidates[0]
+
+        baud = int(self.parameter("baud"))
+        connection = serial.Serial(port, baud, timeout=0.2)
+        connection.reset_input_buffer()
+        self.get_logger().info(f"IMU connected: {port} @ {baud} bps")
+        return connection
+
+    def read_attitude(self) -> Optional[tuple]:
+        """가장 최근 자세를 (roll, pitch) 로 돌려준다. 없으면 None."""
+        latest = None
+        # 센서는 100Hz 로 보내는데 제어는 그보다 느리므로, 밀린 줄을 모두
+        # 비우고 마지막 값만 쓴다. 그렇지 않으면 오래된 자세로 제어하게 된다.
+        while self.serial.in_waiting > 0:
+            line = self.serial.readline()
+            if not line:
+                break
+            text = line.decode("ascii", "replace").strip()
+            if not text.startswith("*"):
+                continue
+            try:
+                values = [float(x) for x in text[1:].split(",")]
+            except ValueError:
+                continue
+            if len(values) >= 2:
+                latest = (values[0], values[1])
+        return latest
+
+    def tare(self, samples: int) -> None:
+        """현재 자세를 수평 기준으로 삼는다 (장착 오차 보정)."""
+        rolls, pitches = [], []
+        deadline = self.get_clock().now().nanoseconds + int(3e9)
+        while len(rolls) < samples and self.get_clock().now().nanoseconds < deadline:
+            attitude = self.read_attitude()
+            if attitude is not None:
+                rolls.append(attitude[0])
+                pitches.append(attitude[1])
+
+        if not rolls:
+            self.get_logger().warn("tare 실패: IMU 데이터를 받지 못했다")
+            return
+
+        self.controller.roll_offset = sum(rolls) / len(rolls)
+        self.controller.pitch_offset = sum(pitches) / len(pitches)
+        self.get_logger().info(
+            f"tare 완료 ({len(rolls)} 샘플): "
+            f"roll_offset={self.controller.roll_offset:+.2f}, "
+            f"pitch_offset={self.controller.pitch_offset:+.2f}"
+        )
+
+    def publish(self, velocities) -> None:
+        message = Float64MultiArray()
+        message.data = [float(velocities[motor_id]) for motor_id in (1, 2, 3, 4)]
+        self.publisher.publish(message)
+
+    def control_loop(self) -> None:
+        attitude = self.read_attitude()
+        if attitude is None:
+            return
+
+        roll, pitch = attitude
+        command = self.controller.update(roll, pitch)
+
+        if command.reason != self.last_reason:
+            self.get_logger().info(command.reason)
+            self.last_reason = command.reason
+
+        if self.dry_run:
+            if command.active():
+                detail = "  ".join(
+                    f"{WHEEL_NAMES[w]}({w}) {command.velocities[w]:+.2f}"
+                    for w in (1, 2, 3, 4)
+                )
+                self.get_logger().info(f"[dry_run] {detail}", throttle_duration_sec=0.5)
+            return
+
+        self.publish(command.velocities)
+
+    def destroy_node(self) -> bool:
+        try:
+            if not self.dry_run:
+                self.publish(self.controller.stop().velocities)
+        finally:
+            if getattr(self, "serial", None) is not None:
+                self.serial.close()
+        return super().destroy_node()
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    node = ImuLeveler()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

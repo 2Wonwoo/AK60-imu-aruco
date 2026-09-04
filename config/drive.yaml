@@ -1,0 +1,11 @@
+four_wheel_drive_node:
+  ros__parameters:
+    can_interface: can1
+    # Measure these two values before odometry/Nav2 integration.
+    wheel_radius: 0.10
+    track_width: 0.50
+    max_wheel_velocity: 2.0
+    kd: 1.0
+    control_rate: 50.0
+    command_timeout: 0.5
+

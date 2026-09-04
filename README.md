@@ -3,6 +3,9 @@
 Jetson Orin Nano + AK60-6 4륜 로봇용 ROS 2 패키지.
 SocketCAN 모터 구동, ArUco 마커 추종, IMU 기반 자세 복원을 포함한다.
 
+> 같은 로봇을 OpenCR + DYNAMIXEL로 제어하는 별도 경로(ROS2 아님, Jetson 미경유,
+> Linux PC에서 USB로 OpenCR에 직접 연결)는 [`opencr_dxl_control/`](opencr_dxl_control/README.md) 참고.
+
 ## Quick Start
 
 **1. 준비** — 매번 터미널을 열 때마다

@@ -30,6 +30,10 @@ ros2 launch ak60_driver aruco_imu.launch.py dry_run:=false
 
 `Ctrl+C` 로 종료하면 모터에 정지 명령이 나간다.
 
+> ⚠️ **로봇을 평평한 바닥에 네 바퀴로 세운 상태에서 실행할 것.** 시작 시점의
+> 자세를 자동으로 0점으로 잡고, 이후 그 기준에서 ±5도를 벗어나면 자세 복원이
+> 작동한다. 기울어진 상태로 시작하면 그 자세를 수평으로 학습해 버린다.
+
 ### 개별 실행
 
 ```bash
@@ -198,35 +202,36 @@ ros2 run ak60_driver imu_leveler --ros-args -p mount_yaw_deg:=270.0
 거울처럼 좌우만 뒤집혔다면 (회전으로 설명되지 않는 경우) `roll_sign` 또는
 `pitch_sign` 을 `-1.0` 으로 준다.
 
-### 수평 기준과 데드존
+### 수평 기준과 데드존 (시작 시 자동 0점)
 
 IMU 는 중력 기준 절대각을 출력하므로, 장착이 조금이라도 기울면 평지에서도 각도가
-0 으로 읽히지 않는다. 이 로봇에서 평지에 두고 500 샘플을 측정한 값:
+0 으로 읽히지 않는다. 그래서 **노드가 시작할 때 그 시점의 자세를 자동으로 0점으로
+잡는다** (`tare_on_start` 기본값 `true`). 껐다 켤 때마다 맞춰지므로 offset 을
+손으로 넣을 필요가 없다.
 
 ```
-roll  평균 -2.31도   (표준편차 0.005 - 드리프트가 아니라 장착 기울기)
-pitch 평균 +1.83도
+[INFO] 시작 자세를 0점으로 잡는다 - 로봇이 평평한 바닥에 서 있어야 한다
+[INFO] tare 완료 (50 샘플): roll_offset=-6.28, pitch_offset=-3.88
+[INFO] IMU leveler ready: zero=(roll -6.28, pitch -3.88), deadzone=+-5.0 deg
+[INFO] [FOLLOW] level (tilt 0.0 deg)
 ```
 
-이 값이 `roll_offset` / `pitch_offset` 기본값으로 들어가 있어, **현재 자세가
-`tilt 0.0 deg` 로 읽힌다.** 그리고 `level_threshold` 가 5.0 이므로 **기준에서
-±5도 안쪽의 변화에는 반응하지 않는다.**
+이후 기울기는 **모두 이 0점 대비**로 판정되고, `level_threshold`(기본 5.0)에 따라
+**기준에서 ±5도 안쪽의 변화에는 반응하지 않는다.**
 
-로봇에서 IMU 를 떼어 다시 달았거나 다른 기체에 옮겼다면 기준을 다시 잡아야 한다.
-**네 바퀴가 모두 평평한 바닥에 닿은 상태에서** 실행할 것:
+> ⚠️ **반드시 평평한 바닥에 네 바퀴로 선 상태에서 실행할 것.** 바퀴가 장애물에
+> 올라간 상태로 시작하면 그 기울어진 자세를 수평으로 학습해 버려서, 평지에
+> 내려왔을 때 로봇이 오히려 다시 올라가려 한다.
+>
+> 기준을 잡는 0.5초 동안 자세가 1도 넘게 흔들리면 경고를 띄운다. 그 경고가
+> 보이면 로봇을 세워두고 다시 시작할 것.
+
+기준을 고정하고 싶으면 (예: 매번 같은 값을 쓰고 싶을 때) tare 를 끄고 직접 준다:
 
 ```bash
-ros2 run ak60_driver imu_leveler --ros-args -p tare_on_start:=true
+ros2 launch ak60_driver aruco_imu.launch.py tare_on_start:=false \
+    roll_offset:=-6.28 pitch_offset:=-3.88
 ```
-
-로그에 새 값이 나온다:
-
-```
-tare 완료 (50 샘플): roll_offset=-2.31, pitch_offset=+1.83
-```
-
-> ⚠️ **바퀴가 장애물에 올라간 상태에서 tare 하지 말 것.** 그 기울어진 자세를
-> 수평으로 학습해 버려서, 평지에 내려왔을 때 로봇이 다시 올라가려 한다.
 
 ### 실행
 
@@ -259,8 +264,8 @@ ros2 launch ak60_driver imu_level.launch.py dry_run:=false pitch_sign:=-1.0
 | `max_tilt` | 35.0 | 이보다 크게 기울면 비정상으로 보고 정지 |
 | `roll_sign` / `pitch_sign` | 1.0 | 부호 규약 보정 (거울 반전인 경우) |
 | `mount_yaw_deg` | 90.0 | IMU 장착 회전각 (이 로봇 실측) |
-| `roll_offset` / `pitch_offset` | −2.31 / 1.83 | 수평 기준값 (이 로봇 실측) |
-| `tare_on_start` | `false` | 시작할 때 현재 자세를 수평으로 잡기 |
+| `roll_offset` / `pitch_offset` | −2.31 / 1.83 | 수평 기준값. `tare_on_start` 가 `true` 면 시작 시 덮어쓴다 |
+| `tare_on_start` | `true` | 시작 시점의 자세를 0점으로 잡기 (평지에서 실행) |
 | `publish_rate` | 20.0 | 제어 주기 (Hz) |
 | `yield_when_level` | `true` | 수평이면 발행하지 않아 마커 추종에 양보 |
 | `level_hold_sec` | 0.3 | 수평이 이만큼 유지되어야 주도권 반환 |

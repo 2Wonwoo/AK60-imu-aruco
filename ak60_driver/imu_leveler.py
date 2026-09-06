@@ -45,12 +45,14 @@ class ImuLeveler(Node):
         self.declare_parameter("pitch_sign", 1.0)
         # 이 로봇에 IMU 를 장착한 상태에서 평지에 두고 측정한 값(500 샘플 평균).
         # 다른 곳에 옮겨 달았다면 tare_on_start:=true 로 다시 잡을 것.
-        self.declare_parameter("roll_offset", -2.31)
-        self.declare_parameter("pitch_offset", 1.83)
+        self.declare_parameter("roll_offset", -8.72)
+        self.declare_parameter("pitch_offset", -4.82)
         # 이 로봇은 IMU 가 바디에 수직축으로 90도 돌아간 채 장착되어 있다.
         # 네 모서리를 하나씩 들어올려 확인한 값 (test_imu_level_control.py 참조).
         self.declare_parameter("mount_yaw_deg", 90.0)
-        self.declare_parameter("tare_on_start", False)
+        # 시작 시점의 자세를 0점으로 잡는다. 이후 기울기는 모두 그 기준 대비다.
+        # 껐다 켤 때마다 자동으로 맞춰지므로 offset 을 손으로 넣을 필요가 없다.
+        self.declare_parameter("tare_on_start", True)
         self.declare_parameter("tare_samples", 50)
 
         self.declare_parameter("dry_run", True)       # 기본은 모터를 움직이지 않는다
@@ -85,6 +87,9 @@ class ImuLeveler(Node):
         self.serial = self.open_imu()
 
         if bool(self.parameter("tare_on_start")):
+            self.get_logger().info(
+                "시작 자세를 0점으로 잡는다 - 로봇이 평평한 바닥에 서 있어야 한다"
+            )
             self.tare(int(self.parameter("tare_samples")))
 
         rate = float(self.parameter("publish_rate"))
@@ -93,7 +98,9 @@ class ImuLeveler(Node):
 
         self.get_logger().info(
             f"IMU leveler ready: dry_run={self.dry_run}, "
-            f"threshold={self.controller.level_threshold:.1f} deg, "
+            f"zero=(roll {self.controller.roll_offset:+.2f}, "
+            f"pitch {self.controller.pitch_offset:+.2f}), "
+            f"deadzone=+-{self.controller.level_threshold:.1f} deg, "
             f"gain={self.controller.gain:.3f}, max={self.controller.max_velocity:.2f} rad/s"
         )
         if self.dry_run:
@@ -145,7 +152,12 @@ class ImuLeveler(Node):
         return latest
 
     def tare(self, samples: int) -> None:
-        """현재 자세를 수평 기준으로 삼는다 (장착 오차 보정)."""
+        """시작 시점의 자세를 0점으로 삼는다.
+
+        이후의 기울기는 모두 이 기준 대비로 판정하므로, 로봇이 **평평한 바닥에
+        네 바퀴로 서 있을 때** 실행해야 한다. 장애물에 올라간 상태로 잡으면
+        그 기울어진 자세를 수평으로 학습해 버린다.
+        """
         rolls, pitches = [], []
         deadline = self.get_clock().now().nanoseconds + int(3e9)
         while len(rolls) < samples and self.get_clock().now().nanoseconds < deadline:
@@ -155,8 +167,21 @@ class ImuLeveler(Node):
                 pitches.append(attitude[1])
 
         if not rolls:
-            self.get_logger().warn("tare 실패: IMU 데이터를 받지 못했다")
+            self.get_logger().warn(
+                "tare 실패: IMU 데이터를 받지 못했다. 파라미터의 offset 값을 그대로 쓴다"
+            )
             return
+
+        # 기준을 잡는 동안 흔들렸다면 그 기준을 믿을 수 없다.
+        spread = max(
+            max(rolls) - min(rolls),
+            max(pitches) - min(pitches),
+        )
+        if spread > 1.0:
+            self.get_logger().warn(
+                f"tare 중 자세가 {spread:.1f}도 흔들렸다. 로봇이 정지해 있는지 "
+                f"확인하고 다시 시작할 것"
+            )
 
         self.controller.roll_offset = sum(rolls) / len(rolls)
         self.controller.pitch_offset = sum(pitches) / len(pitches)

@@ -53,10 +53,13 @@ def generate_launch_description():
         DeclareLaunchArgument("level_threshold", default_value="5.0"),
         DeclareLaunchArgument("gain", default_value="0.08"),
         DeclareLaunchArgument("max_velocity", default_value="0.6"),
-        DeclareLaunchArgument("roll_offset", default_value="-2.31"),
-        DeclareLaunchArgument("pitch_offset", default_value="1.83"),
+        DeclareLaunchArgument("roll_offset", default_value="-8.72"),
+        DeclareLaunchArgument("pitch_offset", default_value="-4.82"),
         DeclareLaunchArgument("mount_yaw_deg", default_value="90.0"),
         DeclareLaunchArgument("level_hold_sec", default_value="0.3"),
+        # 시작 시점의 자세를 0점으로 잡는다 (평평한 바닥에서 실행할 것).
+        # false 로 두면 위의 roll_offset / pitch_offset 을 그대로 쓴다.
+        DeclareLaunchArgument("tare_on_start", default_value="true"),
     ]
 
     driver = Node(
@@ -96,6 +99,7 @@ def generate_launch_description():
             "pitch_offset": float_param("pitch_offset"),
             "mount_yaw_deg": float_param("mount_yaw_deg"),
             "level_hold_sec": float_param("level_hold_sec"),
+            "tare_on_start": bool_param("tare_on_start"),
             # 수평일 때는 발행하지 않아 마커 추종에 주도권을 넘긴다
             "yield_when_level": True,
         }],

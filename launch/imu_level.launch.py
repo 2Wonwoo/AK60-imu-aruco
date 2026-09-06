@@ -27,7 +27,9 @@ def generate_launch_description():
         DeclareLaunchArgument("roll_sign", default_value="1.0"),
         DeclareLaunchArgument("pitch_sign", default_value="1.0"),
         DeclareLaunchArgument("mount_yaw_deg", default_value="90.0"),
-        DeclareLaunchArgument("tare_on_start", default_value="false"),
+        # 시작 시점의 자세를 0점으로 잡는다 (평평한 바닥에서 실행할 것).
+        # false 로 두면 위의 roll_offset / pitch_offset 을 그대로 쓴다.
+        DeclareLaunchArgument("tare_on_start", default_value="true"),
     ]
 
     driver = Node(

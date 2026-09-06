@@ -8,7 +8,7 @@ ROBOT_PITCH_OFFSET = 1.83
 
 def controller(**overrides):
     settings = dict(
-        level_threshold=5.0,
+        level_threshold=2.5,
         gain=0.08,
         max_velocity=0.6,
         min_velocity=0.05,
@@ -91,7 +91,7 @@ def test_sign_flags_invert_the_convention():
 
 
 def robot_controller(**overrides):
-    """이 로봇의 실제 설정: 측정된 장착 오차 + 데드존 5도."""
+    """이 로봇의 실제 설정: 측정된 장착 오차 + 데드존 2.5도."""
     return controller(
         roll_offset=ROBOT_ROLL_OFFSET, pitch_offset=ROBOT_PITCH_OFFSET, **overrides
     )
@@ -106,22 +106,26 @@ def test_measured_resting_attitude_is_treated_as_level():
     assert command.active() is False
 
 
-def test_deadzone_is_five_degrees_around_the_measured_level():
+def test_deadzone_is_two_and_a_half_degrees_around_the_measured_level():
     policy = robot_controller()
 
-    # 기준에서 ±5도 안쪽은 전부 무반응
-    for droll, dpitch in [(4.9, 0.0), (-4.9, 0.0), (0.0, 4.9), (0.0, -4.9),
-                          (4.0, 4.0), (-4.0, -4.0)]:
+    # 기준에서 ±2.5도 안쪽은 전부 무반응
+    for droll, dpitch in [(2.4, 0.0), (-2.4, 0.0), (0.0, 2.4), (0.0, -2.4),
+                          (2.0, 2.0), (-2.0, -2.0)]:
         command = policy.update(
             roll=ROBOT_ROLL_OFFSET + droll, pitch=ROBOT_PITCH_OFFSET + dpitch
         )
         assert command.level is True, f"{droll:+.1f}, {dpitch:+.1f} 에서 반응함"
         assert command.active() is False
 
-    # 5도를 넘으면 반응
-    command = policy.update(roll=ROBOT_ROLL_OFFSET, pitch=ROBOT_PITCH_OFFSET + 5.5)
+    # 2.5도를 넘으면 반응
+    command = policy.update(roll=ROBOT_ROLL_OFFSET, pitch=ROBOT_PITCH_OFFSET + 3.0)
     assert command.level is False
     assert command.active() is True
+
+    # 예전 임계값(5도)에서는 무반응이던 각도에도 이제 반응해야 한다
+    sensitive = policy.update(roll=ROBOT_ROLL_OFFSET, pitch=ROBOT_PITCH_OFFSET + 4.0)
+    assert sensitive.level is False
 
 
 def test_offset_ignored_wheel_choice_still_correct():

@@ -50,7 +50,7 @@ def generate_launch_description():
         DeclareLaunchArgument("resume_distance", default_value="0.75"),
         DeclareLaunchArgument("sensor_id", default_value="0"),
         # 자세 복원
-        DeclareLaunchArgument("level_threshold", default_value="5.0"),
+        DeclareLaunchArgument("level_threshold", default_value="2.5"),
         DeclareLaunchArgument("gain", default_value="0.08"),
         DeclareLaunchArgument("max_velocity", default_value="0.6"),
         DeclareLaunchArgument("roll_offset", default_value="-8.72"),

@@ -34,7 +34,7 @@ class ImuLeveler(Node):
         self.declare_parameter("baud", 115200)
         self.declare_parameter("publish_rate", 20.0)
 
-        self.declare_parameter("level_threshold", 5.0)
+        self.declare_parameter("level_threshold", 2.5)
         self.declare_parameter("gain", 0.08)
         self.declare_parameter("max_velocity", 0.6)
         self.declare_parameter("min_velocity", 0.05)

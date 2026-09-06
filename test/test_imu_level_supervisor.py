@@ -6,7 +6,7 @@ TILTED = (0.0, 12.0)        # 앞이 들림 -> 앞바퀴가 장애물 위
 
 def supervisor(**overrides):
     settings = dict(
-        level_threshold=5.0,
+        level_threshold=2.5,
         gain=0.08,
         max_velocity=0.6,
         min_velocity=0.05,

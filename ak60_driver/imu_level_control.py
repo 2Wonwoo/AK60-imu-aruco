@@ -71,7 +71,7 @@ class LevelController:
     (the driver node applies each motor's own direction sign).
     """
 
-    level_threshold: float = 5.0      # 이 각도 아래면 수평으로 본다 (데드존)
+    level_threshold: float = 2.5      # 이 각도 아래면 수평으로 본다 (데드존)
     gain: float = 0.08                # rad/s per degree of elevation
     max_velocity: float = 0.6         # rad/s, 안전을 위해 낮게 잡는다
     min_velocity: float = 0.05        # 이보다 작은 명령은 무시 (모터 떨림 방지)

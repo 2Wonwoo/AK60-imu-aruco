@@ -18,7 +18,7 @@ def generate_launch_description():
     arguments = [
         DeclareLaunchArgument("dry_run", default_value="true"),
         DeclareLaunchArgument("port", default_value=""),
-        DeclareLaunchArgument("level_threshold", default_value="5.0"),
+        DeclareLaunchArgument("level_threshold", default_value="2.5"),
         DeclareLaunchArgument("roll_offset", default_value="-2.31"),
         DeclareLaunchArgument("pitch_offset", default_value="1.83"),
         DeclareLaunchArgument("gain", default_value="0.08"),

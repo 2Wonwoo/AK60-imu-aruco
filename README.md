@@ -52,7 +52,7 @@ ros2 launch ak60_driver aruco_imu.launch.py dry_run:=false \
 
 # 정지 거리 / 자세 복원 데드존
 ros2 launch ak60_driver aruco_imu.launch.py dry_run:=false \
-    stop_distance:=0.60 level_threshold:=5.0
+    stop_distance:=0.60 level_threshold:=2.5
 
 # 카메라 화면 보기
 ros2 launch ak60_driver aruco_imu.launch.py dry_run:=false headless:=false
@@ -216,7 +216,7 @@ IMU 는 중력 기준 절대각을 출력하므로, 장착이 조금이라도 �
 [INFO] [FOLLOW] level (tilt 0.0 deg)
 ```
 
-이후 기울기는 **모두 이 0점 대비**로 판정되고, `level_threshold`(기본 5.0)에 따라
+이후 기울기는 **모두 이 0점 대비**로 판정되고, `level_threshold`(기본 2.5)에 따라
 **기준에서 ±5도 안쪽의 변화에는 반응하지 않는다.**
 
 > ⚠️ **반드시 평평한 바닥에 네 바퀴로 선 상태에서 실행할 것.** 바퀴가 장애물에
@@ -256,7 +256,7 @@ ros2 launch ak60_driver imu_level.launch.py dry_run:=false pitch_sign:=-1.0
 | `dry_run` | `true` | 명령을 발행하지 않고 판정만 출력 |
 | `port` | 자동 탐색 | IMU 시리얼 포트 (비우면 `/dev/ttyUSB*` 자동) |
 | `baud` | 115200 | IMU 통신속도 |
-| `level_threshold` | 5.0 | 기준에서 이 각도(도) 안쪽이면 수평으로 보고 정지 (데드존) |
+| `level_threshold` | 2.5 | 기준에서 이 각도(도) 안쪽이면 수평으로 보고 정지 (데드존) |
 | `gain` | 0.08 | 들린 각도 1도당 rad/s |
 | `max_velocity` | 0.6 | 바퀴 속도 상한 (rad/s) |
 | `min_velocity` | 0.05 | 이보다 작은 명령은 무시 (모터 떨림 방지) |

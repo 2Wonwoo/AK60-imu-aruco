@@ -16,7 +16,6 @@ AK60 keyboard drive
 -------------------
         W: forward
    A: left   D: right
-        S: reverse
 
 SPACE or X: stop
 Q: stop and quit
@@ -29,7 +28,7 @@ class KeyboardTeleop(Node):
         if not sys.stdin.isatty():
             raise RuntimeError("keyboard_teleop must be run in an interactive terminal")
 
-        self.declare_parameter("linear_speed", 0.20)
+        self.declare_parameter("linear_speed", 0.05)
         self.declare_parameter("angular_speed", 0.80)
         self.declare_parameter("publish_rate", 20.0)
 
@@ -66,8 +65,6 @@ class KeyboardTeleop(Node):
         key = self.read_key()
         if key == "w":
             self.linear, self.angular = self.linear_speed, 0.0
-        elif key == "s":
-            self.linear, self.angular = -self.linear_speed, 0.0
         elif key == "a":
             self.linear, self.angular = 0.0, self.angular_speed
         elif key == "d":

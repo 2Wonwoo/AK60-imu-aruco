@@ -118,12 +118,11 @@ class FourWheelDriveNode(Node):
         left_wheel = left_linear / self.wheel_radius
         right_wheel = right_linear / self.wheel_radius
 
-        left_wheel = clamp(
-            left_wheel, -self.max_wheel_velocity, self.max_wheel_velocity
-        )
-        right_wheel = clamp(
-            right_wheel, -self.max_wheel_velocity, self.max_wheel_velocity
-        )
+        # 후진 금지: /cmd_vel 에서 온 명령은 절대 음수 바퀴 속도가 되지 않는다.
+        # 제자리 회전은 안쪽 바퀴가 0 으로 잘려 한쪽만 구동하는 선회가 된다.
+        # (자세 복원용 /wheel_velocities 는 들린 바퀴를 후진시켜야 하므로 예외)
+        left_wheel = clamp(left_wheel, 0.0, self.max_wheel_velocity)
+        right_wheel = clamp(right_wheel, 0.0, self.max_wheel_velocity)
 
         self.targets = {
             1: self.MOTOR_DIRECTION[1] * right_wheel,

@@ -25,6 +25,13 @@ class SocketCanSender:
         frame = struct.pack("=IB3x8s", can_id | CAN_EFF_FLAG, 8, payload)
         self.socket.send(frame)
 
+    def send_standard(self, can_id: int, payload: bytes) -> None:
+        """표준(11비트) 프레임. MIT 모드 진입/해제 프레임이 이 형식을 쓴다."""
+        if len(payload) != 8:
+            raise ValueError("AK60 command payload must contain exactly 8 bytes")
+        frame = struct.pack("=IB3x8s", can_id, 8, payload)
+        self.socket.send(frame)
+
     def close(self) -> None:
         self.socket.close()
 
@@ -38,6 +45,12 @@ class FourWheelDriveNode(Node):
         3: 1.0,   # rear right
         4: -1.0,  # rear left
     }
+
+    # MIT 모드 진입/해제 프레임. 진입 프레임을 받기 전까지 모터는 제어 프레임을
+    # 무시한다 (프레임은 정상적으로 나가는데 바퀴가 전혀 안 도는 증상이 된다).
+    # 표준 프레임으로 각 모터의 ID 에 보낸다.
+    MIT_ENABLE = bytes.fromhex("FFFFFFFFFFFFFFFC")
+    MIT_DISABLE = bytes.fromhex("FFFFFFFFFFFFFFFD")
 
     def __init__(self) -> None:
         super().__init__("four_wheel_drive_node")
@@ -95,6 +108,7 @@ class FourWheelDriveNode(Node):
         self.timer = self.create_timer(1.0 / control_rate, self.control_loop)
 
         try:
+            self.enable_motors()
             self.send_stop(repetitions=10)
         except OSError as error:
             # 인터페이스가 내려가 있으면 여기서 처음 드러난다. 트레이스백만
@@ -154,6 +168,24 @@ class FourWheelDriveNode(Node):
         self.last_wheel_time = self.get_clock().now()
         self.timed_out = False
 
+    def enable_motors(self) -> None:
+        """네 모터를 MIT 모드로 진입시킨다.
+
+        이 프레임 없이는 모터가 제어 프레임을 받고도 아무 반응을 하지 않는다.
+        CAN 상으로는 명령이 정상으로 보이므로 원인을 찾기 어렵다.
+        """
+        for motor_id in (1, 2, 3, 4):
+            self.bus.send_standard(motor_id, self.MIT_ENABLE)
+            time.sleep(0.01)
+        self.get_logger().info("MIT enable sent to motors 1-4")
+
+    def disable_motors(self) -> None:
+        for motor_id in (1, 2, 3, 4):
+            try:
+                self.bus.send_standard(motor_id, self.MIT_DISABLE)
+            except OSError:
+                pass
+
     def send_targets(self, targets: Dict[int, float]) -> None:
         for motor_id in (1, 2, 3, 4):
             payload = self.protocol.velocity_command(targets[motor_id], self.kd)
@@ -203,6 +235,7 @@ class FourWheelDriveNode(Node):
         if not self.closed:
             try:
                 self.send_stop(repetitions=10)
+                self.disable_motors()
             except OSError as error:
                 self.get_logger().error(f"CAN stop failed during shutdown: {error}")
             finally:

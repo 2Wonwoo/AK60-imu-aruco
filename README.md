@@ -77,6 +77,7 @@ python3 -m pytest src/ak60_driver/test/ -q \
 | `Network is down` 으로 노드가 죽음 | CAN 미기동 → `~/can_check.sh can1 1000000` |
 | 모터가 전혀 안 움직임 | `dry_run` 이 `true` (기본값) → `dry_run:=false` |
 | 명령을 보내도 모터 무반응 | `ip -d link show can1` 이 `ERROR-PASSIVE` 면 모터 전원·배선·종단저항 확인 |
+| CAN 프레임은 나가는데 바퀴가 안 돎 | MIT 진입 프레임 미전송. `four_wheel_drive_node` 가 시작할 때 보내므로 `MIT enable sent to motors 1-4` 로그를 확인할 것 |
 | 엉뚱한 바퀴가 후진 | IMU 장착 방향 → [`mount_yaw_deg`](#imu-장착-방향-mount_yaw_deg) |
 
 ---
